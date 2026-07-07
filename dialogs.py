@@ -571,6 +571,12 @@ class MapDialog(QDialog):
         ).add_to(m)
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
 
+        # Hide Leaflet attribution bar
+        from branca.element import Element
+        m.get_root().html.add_child(Element(
+            '<style>.leaflet-control-attribution{display:none!important}</style>'
+        ))
+
         # Markers
         for idx, lat, lon, alt in points:
             tip = f'#{idx}  {lat:.6f}, {lon:.6f}'
