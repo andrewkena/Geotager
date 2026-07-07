@@ -1,4 +1,4 @@
-# Geotager
+# Geotager 
 
 Десктопное приложение для записи GPS-координат в EXIF-метаданные фотографий.  
 Работает на Windows, написано на Python + PyQt5.
@@ -9,6 +9,8 @@
 ![PyQt5](https://img.shields.io/badge/PyQt5-5.15-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
+---
+<img width="1110" height="689" alt="photo_2026-07-07_08-45-18" src="https://github.com/user-attachments/assets/dfe510a8-f839-4da1-942b-6a8601246392" />
 ---
 
 ## Возможности
