@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QDialogButtonBox,
     QRadioButton, QButtonGroup, QGroupBox, QHeaderView, QScrollArea,
-    QCheckBox, QSpinBox, QApplication,
+    QCheckBox, QSpinBox, QApplication, QWidget,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QFont
