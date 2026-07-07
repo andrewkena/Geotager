@@ -11,6 +11,9 @@ from PyQt5.QtGui import QPalette, QColor
 from photo_panel import PhotoPanel
 from geo_panel   import GeoPanel
 
+VERSION = '0.1'
+AUTHOR  = 'andrewkena'
+
 
 # ---------------------------------------------------------------------------
 # Theme helpers
@@ -82,7 +85,7 @@ def apply_theme(theme: str):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Geotager')
+        self.setWindowTitle(f'Geotager  v{VERSION}')
         self.setMinimumSize(1100, 650)
         self._build_menu()
         self._build_ui()
@@ -91,6 +94,11 @@ class MainWindow(QMainWindow):
     # Menu
 
     def _build_menu(self):
+        help_menu = self.menuBar().addMenu('Справка')
+        about_act = QAction('О программе', self)
+        about_act.triggered.connect(self._show_about)
+        help_menu.addAction(about_act)
+
         view = self.menuBar().addMenu('Вид')
         theme_menu = view.addMenu('Тема')
         self._theme_group = QActionGroup(self)
@@ -131,6 +139,14 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.match_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
+
+    def _show_about(self):
+        QMessageBox.information(
+            self, 'О программе',
+            f'<b>Geotager</b> v{VERSION}<br>'
+            f'Автор: {AUTHOR}<br><br>'
+            f'Запись GPS-координат в EXIF фотографий.',
+        )
 
     # ------------------------------------------------------------------
     # Match / write

@@ -3,6 +3,8 @@
 Десктопное приложение для записи GPS-координат в EXIF-метаданные фотографий.  
 Работает на Windows, написано на Python + PyQt5.
 
+![Version](https://img.shields.io/badge/version-0.1-orange)
+![Author](https://img.shields.io/badge/author-andrewkena-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt5](https://img.shields.io/badge/PyQt5-5.15-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
