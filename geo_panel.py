@@ -25,8 +25,18 @@ class GeoPanel(QWidget):
         self.file_btn = QPushButton('📄  Выбрать файл геоданных')
         self.file_btn.clicked.connect(self._pick_file)
         tb.addWidget(self.file_btn)
+
+        self.map_btn = QPushButton('🗺  Показать на карте')
+        self.map_btn.setEnabled(False)
+        self.map_btn.clicked.connect(self._open_map)
+        tb.addWidget(self.map_btn)
         tb.addStretch()
         lay.addLayout(tb)
+
+        self.path_label = QLabel('')
+        self.path_label.setStyleSheet('font-size:10px; color:#888;')
+        self.path_label.setWordWrap(False)
+        lay.addWidget(self.path_label)
 
         self.table = QTableWidget()
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -51,7 +61,11 @@ class GeoPanel(QWidget):
             return
 
         _, self.headers, self.geo_data, self.columns, self._display_cols = dlg.get_result()
+        self._file_path = path
         self.file_btn.setText(os.path.basename(path))
+        self.path_label.setText(path)
+        self.path_label.setToolTip(path)
+        self.map_btn.setEnabled(bool(self.geo_data))
         self._show_data()
 
     def _show_data(self):
@@ -74,6 +88,11 @@ class GeoPanel(QWidget):
 
         dup_note = f'  (дубликатов: {len(dups) // 2})' if dups else ''
         self.summary.setText(f'Строк данных: {len(self.geo_data)}{dup_note}')
+
+    def _open_map(self):
+        from dialogs import MapDialog
+        dlg = MapDialog(self.geo_data, self.columns, self.headers, self)
+        dlg.exec_()
 
     # ------------------------------------------------------------------
     # Public API

@@ -485,3 +485,123 @@ class FullImageDialog(QDialog):
             return QPixmap.fromImage(qi)
         except Exception:
             return QPixmap()
+
+
+# ---------------------------------------------------------------------------
+# Map dialog
+# ---------------------------------------------------------------------------
+
+class MapDialog(QDialog):
+    def __init__(self, geo_data: list, columns: dict, headers: list, parent=None):
+        super().__init__(parent)
+        self.geo_data  = geo_data
+        self.columns   = columns
+        self.headers   = headers
+        self._tmp_path = None
+        self.setWindowTitle('Карта геоточек')
+        self.setMinimumSize(960, 680)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
+        self._build_ui()
+        self._render_map()
+
+    def _build_ui(self):
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        self._web = QWebEngineView()
+        lay.addWidget(self._web, 1)
+
+        close_btn = QPushButton('Закрыть')
+        close_btn.setFixedHeight(28)
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn)
+
+    def _render_map(self):
+        import folium
+        import tempfile
+        from PyQt5.QtCore import QUrl
+
+        points = []
+        li = self.columns.get('lat', 0)
+        oi = self.columns.get('lon', 1)
+        ai = self.columns.get('alt')
+
+        for i, row in enumerate(self.geo_data):
+            try:
+                lat = float(row[li].strip())
+                lon = float(row[oi].strip())
+                alt = None
+                if ai is not None and ai < len(row):
+                    try:
+                        alt = float(row[ai].strip())
+                    except ValueError:
+                        pass
+                points.append((i + 1, lat, lon, alt))
+            except (ValueError, IndexError):
+                pass
+
+        if not points:
+            self._web.setHtml(
+                '<body style="font-family:sans-serif;text-align:center;padding-top:80px">'
+                '<h2>Нет координат для отображения</h2></body>'
+            )
+            return
+
+        center_lat = sum(p[1] for p in points) / len(points)
+        center_lon = sum(p[2] for p in points) / len(points)
+
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=13,
+                       tiles='OpenStreetMap')
+
+        # Additional tile layers
+        folium.TileLayer('CartoDB positron',    name='Светлая (CartoDB)').add_to(m)
+        folium.TileLayer('CartoDB dark_matter', name='Тёмная (CartoDB)').add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/'
+                  'World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Спутник (Esri)',
+        ).add_to(m)
+        folium.TileLayer(
+            tiles='https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+            attr='OpenTopoMap',
+            name='Рельеф',
+        ).add_to(m)
+        folium.LayerControl(position='topright', collapsed=False).add_to(m)
+
+        # Markers
+        for idx, lat, lon, alt in points:
+            tip = f'#{idx}  {lat:.6f}, {lon:.6f}'
+            if alt is not None:
+                tip += f'  ↑{alt:.1f}м'
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=6,
+                color='#c0392b',
+                fill=True,
+                fill_color='#e74c3c',
+                fill_opacity=0.85,
+                tooltip=tip,
+            ).add_to(m)
+
+        # Save to temp file
+        if self._tmp_path and os.path.exists(self._tmp_path):
+            try:
+                os.unlink(self._tmp_path)
+            except OSError:
+                pass
+        tmp = tempfile.NamedTemporaryFile(suffix='.html', delete=False)
+        tmp.close()
+        m.save(tmp.name)
+        self._tmp_path = tmp.name
+        self._web.setUrl(QUrl.fromLocalFile(tmp.name))
+
+    def closeEvent(self, event):
+        if self._tmp_path and os.path.exists(self._tmp_path):
+            try:
+                os.unlink(self._tmp_path)
+            except OSError:
+                pass
+        super().closeEvent(event)

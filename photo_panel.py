@@ -203,7 +203,7 @@ class PhotoPanel(QWidget):
         self.folder_btn = QPushButton('📂  Выбрать папку')
         self.folder_btn.clicked.connect(self._pick_folder)
         tb.addWidget(self.folder_btn)
-        tb.addSpacing(12)
+        tb.addSpacing(8)
         tb.addWidget(QLabel('Размер:'))
         self.size_sl = QSlider(Qt.Horizontal)
         self.size_sl.setRange(60, 280)
@@ -219,6 +219,10 @@ class PhotoPanel(QWidget):
         tb.addWidget(self.sort_cb)
         tb.addStretch()
         lay.addLayout(tb)
+
+        self.path_label = QLabel('')
+        self.path_label.setStyleSheet('font-size:10px; color:#888;')
+        lay.addWidget(self.path_label)
 
         self.scroll   = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -241,6 +245,8 @@ class PhotoPanel(QWidget):
             return
         self.folder_path = folder
         self.folder_btn.setText(os.path.basename(folder) or folder)
+        self.path_label.setText(folder)
+        self.path_label.setToolTip(folder)
         self._load_photos(folder)
 
     def _load_photos(self, folder: str):
