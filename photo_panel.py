@@ -217,6 +217,11 @@ class PhotoPanel(QWidget):
         self.sort_cb.addItems(['Имя ↑', 'Имя ↓', 'Дата ↑', 'Дата ↓', 'Размер ↑', 'Размер ↓'])
         self.sort_cb.currentIndexChanged.connect(self._sort_and_render)
         tb.addWidget(self.sort_cb)
+        tb.addSpacing(16)
+        self.rename_btn = QPushButton('Переименовать…')
+        self.rename_btn.setEnabled(False)
+        self.rename_btn.clicked.connect(self._open_rename)
+        tb.addWidget(self.rename_btn)
         tb.addStretch()
         lay.addLayout(tb)
 
@@ -292,6 +297,7 @@ class PhotoPanel(QWidget):
             t.exclude_requested.connect(self._toggle_exclude)
             self._tiles.append(t)
 
+        self.rename_btn.setEnabled(bool(self.photos))
         self._relayout()
         self._update_summary()
 
@@ -350,12 +356,24 @@ class PhotoPanel(QWidget):
         self._update_summary()
 
     def _update_summary(self):
-        total = len(self.photos)
-        excl  = sum(1 for t in self._tiles if t._excluded)
+        total  = len(self.photos)
+        excl   = sum(1 for t in self._tiles if t._excluded)
+        active = total - excl
         if excl:
-            self.summary.setText(f'Фотографий: {total}  (исключено: {excl})')
+            self.summary.setText(f'Фотографий: {active}  (исключено: {excl})')
         else:
             self.summary.setText(f'Фотографий: {total}')
+
+    # ------------------------------------------------------------------
+    # Batch rename
+
+    def _open_rename(self):
+        if not self.photos:
+            return
+        from dialogs import RenameDialog
+        dlg = RenameDialog(self.photos, self)
+        if dlg.exec_() == dlg.Accepted:
+            self._load_photos(self.folder_path)
 
     # ------------------------------------------------------------------
     # Full viewer

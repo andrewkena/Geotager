@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 from main_window import MainWindow
 
-__version__ = '0.1'
+__version__ = '0.2'
 __author__  = 'andrewkena'
 
 _ICON = os.path.join(os.path.dirname(__file__), 'assets', 'pin.ico')

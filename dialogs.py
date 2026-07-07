@@ -8,10 +8,11 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QDialogButtonBox,
     QRadioButton, QButtonGroup, QGroupBox, QHeaderView, QScrollArea,
-    QCheckBox, QSpinBox, QApplication, QWidget,
+    QCheckBox, QSpinBox, QApplication, QWidget, QSplitter, QMenu,
+    QMessageBox,
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QFont
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QFont, QBrush
 from PIL import Image as PilImage
 
 
@@ -42,6 +43,16 @@ def _apply_remove_empty(headers: list, data: list):
             if any(c < len(row) and row[c].strip() for row in data)]
     return [headers[c] for c in keep], \
            [[row[c] if c < len(row) else '' for c in keep] for row in data]
+
+
+def _col_letter(n: int) -> str:
+    """0-based index → Excel-style column letter: 0→A, 25→Z, 26→AA …"""
+    s = ''
+    n += 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +166,9 @@ class DelimiterDialog(QDialog):
         self.headers: list = []
         self.data:    list = []
         self.setWindowTitle('Настройка импорта геоданных')
-        self.setMinimumSize(800, 620)
+        self.setMinimumSize(1100, 640)
+        w = parent.width() if parent else 1100
+        self.resize(w, 680)
         self._build_ui()
         self._refresh()
 
@@ -271,7 +284,7 @@ class DelimiterDialog(QDialog):
             raw_data = rows_raw[1:]
         else:
             max_c = max((len(r) for r in rows_raw), default=0)
-            self.headers = [f'Столбец {i+1}' for i in range(max_c)]
+            self.headers = [_col_letter(i) for i in range(max_c)]
             raw_data = rows_raw
 
         if self._rm_empty_cb.isChecked():
@@ -323,17 +336,20 @@ class DelimiterDialog(QDialog):
             elif any(k in hl for k in ('alt', 'ele', 'высо', 'height', 'altitude')):
                 self._alt_cb.setCurrentIndex(i + 1)
 
-        # Rebuild display-column checkboxes (preserve existing checked state by name)
-        prev_checked = {h for h, cb in self._disp_checks.items() if cb.isChecked()}
+        # Rebuild display-column checkboxes keyed by column index (handles duplicate names)
+        first_time           = len(self._disp_checks) == 0
+        prev_indices         = set(self._disp_checks.keys())
+        prev_checked_indices = {i for i, cb in self._disp_checks.items() if cb.isChecked()}
         self._disp_checks.clear()
         while self._disp_layout.count():
             item = self._disp_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        for h in self.headers:
+        for i, h in enumerate(self.headers):
             cb = QCheckBox(h)
-            cb.setChecked(h not in prev_checked or prev_checked == set() or h in prev_checked)
-            self._disp_checks[h] = cb
+            # First load → all checked; known index → preserve state; new index → checked
+            cb.setChecked(first_time or (i not in prev_indices) or (i in prev_checked_indices))
+            self._disp_checks[i] = cb
             self._disp_layout.addWidget(cb)
         self._disp_layout.addStretch()
 
@@ -349,8 +365,7 @@ class DelimiterDialog(QDialog):
             'lon': self._lon_cb.currentIndex(),
             'alt': alt_idx if alt_idx >= 0 else None,
         }
-        display_cols = [i for i, h in enumerate(self.headers)
-                        if h in self._disp_checks and self._disp_checks[h].isChecked()]
+        display_cols = sorted(i for i, cb in self._disp_checks.items() if cb.isChecked())
         return self._delimiter(), self.headers, self.data, cols, display_cols
 
 
@@ -488,46 +503,317 @@ class FullImageDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Batch rename dialog
+# ---------------------------------------------------------------------------
+
+class RenameDialog(QDialog):
+    _DATE_FMTS = [
+        ('YYYY-MM-DD',  '%Y-%m-%d'),
+        ('YYYYMMDD',    '%Y%m%d'),
+        ('DD.MM.YYYY',  '%d.%m.%Y'),
+        ('YYYY_MM_DD',  '%Y_%m_%d'),
+    ]
+    _TIME_FMTS = [
+        ('HHmmss',    '%H%M%S'),
+        ('HH-mm-ss',  '%H-%M-%S'),
+        ('HH.mm.ss',  '%H.%M.%S'),
+    ]
+    _PRESETS = [
+        ('{name}_{n}',        'Имя + номер'),
+        ('{n}',               'Только номер'),
+        ('{date}_{time}_{n}', 'Дата + время + номер'),
+        ('{date}_{n}',        'Дата + номер'),
+        ('{date}_{name}',     'Дата + имя'),
+        ('photo_{n}',         'photo_ + номер'),
+        ('IMG_{n}',           'IMG_ + номер'),
+    ]
+
+    def __init__(self, photos: list, parent=None):
+        super().__init__(parent)
+        self._photos     = list(photos)   # [(path, name), ...]
+        self._exif_cache = {}
+        self.setWindowTitle('Пакетное переименование')
+        self.setMinimumSize(860, 600)
+        if parent:
+            self.resize(max(parent.width(), 860), 680)
+        self._build_ui()
+        self._update_preview()
+
+    # ------------------------------------------------------------------
+    # UI
+
+    def _build_ui(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        # Template
+        tg = QGroupBox('Шаблон имени')
+        tl = QVBoxLayout(tg)
+
+        pr = QHBoxLayout()
+        pr.addWidget(QLabel('Быстрый выбор:'))
+        self._preset_cb = QComboBox()
+        for tmpl, label in self._PRESETS:
+            self._preset_cb.addItem(label, tmpl)
+        self._preset_cb.activated.connect(
+            lambda idx: self._tmpl_edit.setText(self._preset_cb.itemData(idx)))
+        pr.addWidget(self._preset_cb, 1)
+        tl.addLayout(pr)
+
+        tr = QHBoxLayout()
+        tr.addWidget(QLabel('Шаблон:'))
+        self._tmpl_edit = QLineEdit(self._PRESETS[0][0])
+        self._tmpl_edit.textChanged.connect(self._update_preview)
+        tr.addWidget(self._tmpl_edit, 1)
+        tl.addLayout(tr)
+
+        hint = QLabel(
+            '<small>Токены:&nbsp; <b>{n}</b> — номер, &nbsp;'
+            '<b>{date}</b> — дата EXIF, &nbsp;'
+            '<b>{time}</b> — время EXIF, &nbsp;'
+            '<b>{name}</b> — исходное имя без расширения, &nbsp;'
+            '<b>{ext}</b> — расширение без точки</small>'
+        )
+        hint.setTextFormat(Qt.RichText)
+        tl.addWidget(hint)
+        lay.addWidget(tg)
+
+        # Numbering
+        ng = QGroupBox('Нумерация  {n}')
+        nl = QHBoxLayout(ng)
+        for lbl, attr, val, mn, mx in [
+            ('Начать с:',    '_start_spin', 1, 0, 999999),
+            ('Шаг:',         '_step_spin',  1, 1, 1000),
+            ('Разрядность:', '_pad_spin',   3, 1, 8),
+        ]:
+            nl.addWidget(QLabel(lbl))
+            sp = QSpinBox()
+            sp.setRange(mn, mx)
+            sp.setValue(val)
+            sp.setMaximumWidth(72)
+            sp.valueChanged.connect(self._update_preview)
+            setattr(self, attr, sp)
+            nl.addWidget(sp)
+            nl.addSpacing(20)
+        nl.addStretch()
+        lay.addWidget(ng)
+
+        # Date / time / extension
+        fg = QGroupBox('Форматы даты и времени')
+        fl = QHBoxLayout(fg)
+        fl.addWidget(QLabel('Дата:'))
+        self._date_cb = QComboBox()
+        for lbl, _ in self._DATE_FMTS:
+            self._date_cb.addItem(lbl)
+        self._date_cb.currentIndexChanged.connect(self._update_preview)
+        fl.addWidget(self._date_cb)
+
+        fl.addSpacing(20)
+        fl.addWidget(QLabel('Время:'))
+        self._time_cb = QComboBox()
+        for lbl, _ in self._TIME_FMTS:
+            self._time_cb.addItem(lbl)
+        self._time_cb.currentIndexChanged.connect(self._update_preview)
+        fl.addWidget(self._time_cb)
+
+        fl.addSpacing(20)
+        fl.addWidget(QLabel('Расширение:'))
+        self._ext_cb = QComboBox()
+        self._ext_cb.addItems(['Как в оригинале', 'Нижний регистр (.jpg)', 'Верхний регистр (.JPG)'])
+        self._ext_cb.currentIndexChanged.connect(self._update_preview)
+        fl.addWidget(self._ext_cb)
+        fl.addStretch()
+        lay.addWidget(fg)
+
+        # Preview table
+        lay.addWidget(QLabel('Предпросмотр (красным — конфликты новых имён):'))
+        self._prev_tbl = QTableWidget()
+        self._prev_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._prev_tbl.setColumnCount(2)
+        self._prev_tbl.setHorizontalHeaderLabels(['Исходное имя', 'Новое имя'])
+        self._prev_tbl.verticalHeader().setVisible(False)
+        self._prev_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        lay.addWidget(self._prev_tbl, 1)
+
+        # Warning + buttons
+        self._warn_lbl = QLabel('')
+        self._warn_lbl.setStyleSheet('color:#d32f2f; font-weight:bold;')
+        lay.addWidget(self._warn_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._apply_btn = QPushButton('Переименовать')
+        self._apply_btn.setMinimumHeight(32)
+        self._apply_btn.setMinimumWidth(140)
+        self._apply_btn.clicked.connect(self._apply)
+        cancel_btn = QPushButton('Отмена')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self._apply_btn)
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+
+    # ------------------------------------------------------------------
+    # Name building
+
+    def _load_exif_date(self, path: str):
+        if path not in self._exif_cache:
+            self._exif_cache[path] = _get_photo_exif_info(path).get('date')
+        return self._exif_cache[path]
+
+    def _make_name(self, path: str, orig: str, n: int) -> str:
+        stem, ext = os.path.splitext(orig)
+        tmpl = self._tmpl_edit.text().strip() or '{name}_{n}'
+
+        ext_mode = self._ext_cb.currentIndex()
+        if ext_mode == 1:
+            ext = ext.lower()
+        elif ext_mode == 2:
+            ext = ext.upper()
+
+        num_str = str(n).zfill(self._pad_spin.value())
+
+        date_str = time_str = ''
+        raw = self._load_exif_date(path)
+        if raw:
+            try:
+                dt = datetime.strptime(raw.strip(), '%Y:%m:%d %H:%M:%S')
+                date_str = dt.strftime(self._DATE_FMTS[self._date_cb.currentIndex()][1])
+                time_str = dt.strftime(self._TIME_FMTS[self._time_cb.currentIndex()][1])
+            except ValueError:
+                pass
+
+        new = (tmpl
+               .replace('{n}',    num_str)
+               .replace('{date}', date_str or 'nodate')
+               .replace('{time}', time_str or 'notime')
+               .replace('{name}', stem)
+               .replace('{ext}',  ext.lstrip('.')))
+
+        if '{ext}' not in tmpl:
+            new += ext
+
+        for ch in r'\/:*?"<>|':
+            new = new.replace(ch, '_')
+        return new.strip() or orig
+
+    def _build_plan(self) -> list:
+        n, step = self._start_spin.value(), self._step_spin.value()
+        result = []
+        for path, name in self._photos:
+            result.append((path, name, self._make_name(path, name, n)))
+            n += step
+        return result
+
+    # ------------------------------------------------------------------
+    # Preview
+
+    def _update_preview(self):
+        plan      = self._build_plan()
+        new_names = [r[2] for r in plan]
+        dups      = {nm for nm in new_names if new_names.count(nm) > 1}
+
+        self._prev_tbl.setRowCount(len(plan))
+        for r, (_, old, new) in enumerate(plan):
+            self._prev_tbl.setItem(r, 0, QTableWidgetItem(old))
+            it = QTableWidgetItem(new)
+            if new in dups:
+                it.setForeground(QBrush(QColor(210, 40, 40)))
+            self._prev_tbl.setItem(r, 1, it)
+
+        if dups:
+            self._warn_lbl.setText(f'⚠  Дублирующиеся имена: {len(dups)} — исправьте шаблон.')
+            self._apply_btn.setEnabled(False)
+        else:
+            self._warn_lbl.setText('')
+            self._apply_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Apply
+
+    def _apply(self):
+        import uuid
+        plan   = self._build_plan()
+        if not plan:
+            return
+
+        folder   = os.path.dirname(plan[0][0])
+        existing = set(os.listdir(folder))
+        old_set  = {name for _, name, _ in plan}
+        conflicts = [new for _, old, new in plan
+                     if old != new and new in existing and new not in old_set]
+
+        if conflicts:
+            reply = QMessageBox.question(
+                self, 'Конфликты имён',
+                f'{len(conflicts)} новых имён уже существуют в папке.\nПерезаписать?',
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Two-pass rename (avoids A→B / B→A collisions)
+        tmp_map = {}
+        errors  = []
+        for path, old, new in plan:
+            if old == new:
+                continue
+            tmp = os.path.join(folder,
+                               f'_rntmp_{uuid.uuid4().hex}{os.path.splitext(old)[1]}')
+            try:
+                os.rename(path, tmp)
+                tmp_map[tmp] = os.path.join(folder, new)
+            except OSError as e:
+                errors.append(f'{old}: {e}')
+
+        for tmp, final in tmp_map.items():
+            try:
+                os.rename(tmp, final)
+            except OSError as e:
+                errors.append(f'{os.path.basename(final)}: {e}')
+
+        done = len(tmp_map) - len(errors)
+        if errors:
+            QMessageBox.warning(self, 'Ошибки переименования',
+                                f'Переименовано: {done}/{len(tmp_map)}\n\n' +
+                                '\n'.join(errors[:15]))
+        else:
+            QMessageBox.information(self, 'Готово', f'Переименовано {done} файлов.')
+
+        self.accept()
+
+
+# ---------------------------------------------------------------------------
 # Map dialog
 # ---------------------------------------------------------------------------
 
 class MapDialog(QDialog):
-    def __init__(self, geo_data: list, columns: dict, headers: list, parent=None):
+    def __init__(self, geo_data: list, columns: dict, headers: list,
+                 display_cols=None, parent=None):
         super().__init__(parent)
-        self.geo_data  = geo_data
-        self.columns   = columns
-        self.headers   = headers
-        self._tmp_path = None
+        self.geo_data     = geo_data
+        self.columns      = columns
+        self.headers      = headers
+        self.display_cols = display_cols if display_cols is not None \
+                            else list(range(len(headers)))
+        self._tmp_path    = None
+        self._points      = []   # [(idx, lat, lon, alt, orig_row), ...]
+        self._excluded    = set()
+        self._hover_idx   = -1
         self.setWindowTitle('Карта геоточек')
-        self.setMinimumSize(960, 680)
+        self.setMinimumSize(1100, 680)
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
+        self._extract_points()
         self._build_ui()
         self._render_map()
+        self._fill_table()
 
-    def _build_ui(self):
-        from PyQt5.QtWebEngineWidgets import QWebEngineView
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.setSpacing(4)
+    # ------------------------------------------------------------------
+    # Data
 
-        self._web = QWebEngineView()
-        lay.addWidget(self._web, 1)
-
-        close_btn = QPushButton('Закрыть')
-        close_btn.setFixedHeight(28)
-        close_btn.clicked.connect(self.close)
-        lay.addWidget(close_btn)
-
-    def _render_map(self):
-        import folium
-        import tempfile
-        from PyQt5.QtCore import QUrl
-
-        points = []
+    def _extract_points(self):
         li = self.columns.get('lat', 0)
         oi = self.columns.get('lon', 1)
         ai = self.columns.get('alt')
-
         for i, row in enumerate(self.geo_data):
             try:
                 lat = float(row[li].strip())
@@ -538,61 +824,173 @@ class MapDialog(QDialog):
                         alt = float(row[ai].strip())
                     except ValueError:
                         pass
-                points.append((i + 1, lat, lon, alt))
+                self._points.append((i + 1, lat, lon, alt, row))
             except (ValueError, IndexError):
                 pass
 
-        if not points:
+    # ------------------------------------------------------------------
+    # UI
+
+    def _build_ui(self):
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        self._web = QWebEngineView()
+        splitter.addWidget(self._web)
+
+        self._table = QTableWidget()
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SingleSelection)
+        self._table.setMouseTracking(True)
+        self._table.viewport().setMouseTracking(True)
+        self._table.cellEntered.connect(self._on_hover)
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context)
+        self._table.viewport().installEventFilter(self)
+        self._table.setMinimumWidth(200)
+        self._table.setMaximumWidth(320)
+        splitter.addWidget(self._table)
+
+        splitter.setSizes([820, 260])
+        lay.addWidget(splitter, 1)
+
+        close_btn = QPushButton('Закрыть')
+        close_btn.setFixedHeight(28)
+        close_btn.clicked.connect(self.close)
+        lay.addWidget(close_btn)
+
+    def _fill_table(self):
+        valid_cols = [i for i in self.display_cols if i < len(self.headers)]
+        labels = ['#'] + [self.headers[i] for i in valid_cols]
+        self._table.setColumnCount(len(labels))
+        self._table.setHorizontalHeaderLabels(labels)
+        self._table.setRowCount(len(self._points))
+        self._table.verticalHeader().setVisible(False)
+
+        for r, (idx, lat, lon, alt, orig_row) in enumerate(self._points):
+            self._table.setItem(r, 0, QTableWidgetItem(str(idx)))
+            for c, ci in enumerate(valid_cols):
+                val = orig_row[ci].strip() if ci < len(orig_row) else ''
+                self._table.setItem(r, c + 1, QTableWidgetItem(val))
+
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setStretchLastSection(True)
+
+    # ------------------------------------------------------------------
+    # Map rendering
+
+    def _render_map(self):
+        import folium
+        import json
+        import tempfile
+        from PyQt5.QtCore import QUrl
+        from branca.element import Element
+
+        if not self._points:
             self._web.setHtml(
                 '<body style="font-family:sans-serif;text-align:center;padding-top:80px">'
                 '<h2>Нет координат для отображения</h2></body>'
             )
             return
 
-        center_lat = sum(p[1] for p in points) / len(points)
-        center_lon = sum(p[2] for p in points) / len(points)
+        center_lat = sum(p[1] for p in self._points) / len(self._points)
+        center_lon = sum(p[2] for p in self._points) / len(self._points)
 
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=13,
-                       tiles='OpenStreetMap')
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles=None)
 
-        # Additional tile layers
-        folium.TileLayer('CartoDB positron',    name='Светлая (CartoDB)').add_to(m)
-        folium.TileLayer('CartoDB dark_matter', name='Тёмная (CartoDB)').add_to(m)
+        # Google Hybrid (satellite + labels) — default layer
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            attr='Google',
+            name='Спутник (Google)',
+            max_zoom=21,
+        ).add_to(m)
+        folium.TileLayer('OpenStreetMap', name='OpenStreetMap').add_to(m)
+        folium.TileLayer('CartoDB positron', name='Светлая').add_to(m)
+        folium.TileLayer('CartoDB dark_matter', name='Тёмная').add_to(m)
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/'
                   'World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri',
             name='Спутник (Esri)',
         ).add_to(m)
-        folium.TileLayer(
-            tiles='https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-            attr='OpenTopoMap',
-            name='Рельеф',
-        ).add_to(m)
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
 
-        # Hide Leaflet attribution bar
-        from branca.element import Element
         m.get_root().html.add_child(Element(
             '<style>.leaflet-control-attribution{display:none!important}</style>'
         ))
 
-        # Markers
-        for idx, lat, lon, alt in points:
-            tip = f'#{idx}  {lat:.6f}, {lon:.6f}'
-            if alt is not None:
-                tip += f'  ↑{alt:.1f}м'
-            folium.CircleMarker(
-                location=[lat, lon],
-                radius=6,
-                color='#c0392b',
-                fill=True,
-                fill_color='#e74c3c',
-                fill_opacity=0.85,
-                tooltip=tip,
-            ).add_to(m)
+        # Custom JS markers with highlight / exclude support
+        map_var     = m.get_name()
+        points_json = json.dumps([
+            {'idx': idx, 'lat': lat, 'lng': lon, 'alt': alt}
+            for idx, lat, lon, alt, _row in self._points
+        ])
 
-        # Save to temp file
+        js = f"""<script>
+(function() {{
+    var tid = setInterval(function() {{
+        if (typeof {map_var} !== 'undefined') {{
+            clearInterval(tid);
+            _initMarkers();
+        }}
+    }}, 50);
+
+    function _initMarkers() {{
+        var pts = {points_json};
+        window._markers  = {{}};
+        window._excluded = {{}};
+
+        pts.forEach(function(p) {{
+            var tip = '#' + p.idx + '  ' + p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
+            if (p.alt !== null) tip += '  ↑' + p.alt.toFixed(1) + 'м';
+            window._markers[p.idx] = L.circleMarker([p.lat, p.lng], {{
+                radius: 6, color: '#c0392b', fillColor: '#e74c3c',
+                fillOpacity: 0.85, weight: 2, opacity: 1
+            }}).addTo({map_var}).bindTooltip(tip);
+        }});
+
+        window.highlightMarker = function(i) {{
+            var mk = window._markers[i];
+            if (mk && !window._excluded[i]) {{
+                mk.setStyle({{radius: 11, color: '#e67e22', fillColor: '#f1c40f',
+                              fillOpacity: 1, weight: 3, opacity: 1}});
+                mk.bringToFront();
+            }}
+        }};
+        window.resetMarker = function(i) {{
+            var mk = window._markers[i];
+            if (mk && !window._excluded[i]) {{
+                mk.setStyle({{radius: 6, color: '#c0392b', fillColor: '#e74c3c',
+                              fillOpacity: 0.85, weight: 2, opacity: 1}});
+            }}
+        }};
+        window.toggleExclude = function(i) {{
+            var mk = window._markers[i];
+            if (!mk) return;
+            if (window._excluded[i]) {{
+                delete window._excluded[i];
+                mk.setStyle({{radius: 6, color: '#c0392b', fillColor: '#e74c3c',
+                              fillOpacity: 0.85, weight: 2, opacity: 1}});
+            }} else {{
+                window._excluded[i] = true;
+                mk.setStyle({{radius: 5, color: '#666', fillColor: '#999',
+                              fillOpacity: 0.3, weight: 1, opacity: 0.4}});
+            }}
+        }};
+    }}
+}})();
+</script>"""
+
+        m.get_root().html.add_child(Element(js))
+
         if self._tmp_path and os.path.exists(self._tmp_path):
             try:
                 os.unlink(self._tmp_path)
@@ -603,6 +1001,71 @@ class MapDialog(QDialog):
         m.save(tmp.name)
         self._tmp_path = tmp.name
         self._web.setUrl(QUrl.fromLocalFile(tmp.name))
+
+    # ------------------------------------------------------------------
+    # Hover / exclude interactions
+
+    def eventFilter(self, obj, event):
+        if obj is self._table.viewport() and event.type() == QEvent.Leave:
+            self._reset_hover()
+        return super().eventFilter(obj, event)
+
+    def _on_hover(self, row, col):
+        item = self._table.item(row, 0)
+        if not item:
+            return
+        idx = int(item.text())
+        if idx == self._hover_idx:
+            return
+        self._reset_hover()
+        if idx in self._excluded:
+            return
+        self._hover_idx = idx
+        self._web.page().runJavaScript(f'window.highlightMarker({idx})')
+
+    def _reset_hover(self):
+        if self._hover_idx >= 0:
+            self._web.page().runJavaScript(f'window.resetMarker({self._hover_idx})')
+            self._hover_idx = -1
+
+    def _on_context(self, pos):
+        row = self._table.rowAt(pos.y())
+        if row < 0:
+            return
+        item = self._table.item(row, 0)
+        if not item:
+            return
+        idx  = int(item.text())
+        menu = QMenu(self)
+        if idx in self._excluded:
+            act = menu.addAction('↩  Вернуть точку')
+        else:
+            act = menu.addAction('✕  Исключить точку')
+        if menu.exec_(self._table.viewport().mapToGlobal(pos)) == act:
+            self._toggle_point(row, idx)
+
+    def _toggle_point(self, row: int, idx: int):
+        self._web.page().runJavaScript(f'window.toggleExclude({idx})')
+        if idx in self._excluded:
+            self._excluded.discard(idx)
+            for c in range(self._table.columnCount()):
+                it = self._table.item(row, c)
+                if it:
+                    it.setForeground(QBrush())
+        else:
+            self._excluded.add(idx)
+            if self._hover_idx == idx:
+                self._reset_hover()
+            grey = QBrush(QColor(130, 130, 130))
+            for c in range(self._table.columnCount()):
+                it = self._table.item(row, c)
+                if it:
+                    it.setForeground(grey)
+
+    def get_excluded(self) -> set:
+        return set(self._excluded)
+
+    # ------------------------------------------------------------------
 
     def closeEvent(self, event):
         if self._tmp_path and os.path.exists(self._tmp_path):

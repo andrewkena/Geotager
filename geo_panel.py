@@ -69,17 +69,22 @@ class GeoPanel(QWidget):
         self._show_data()
 
     def _show_data(self):
-        self.table.setColumnCount(len(self.headers))
-        self.table.setHorizontalHeaderLabels(self.headers)
+        vis = self._display_cols if self._display_cols else list(range(len(self.headers)))
+        vis = [i for i in vis if i < len(self.headers)]
+        col_names = [self.headers[i] for i in vis]
+
+        self.table.setColumnCount(len(col_names))
+        self.table.setHorizontalHeaderLabels(col_names)
         self.table.setRowCount(len(self.geo_data))
 
         for r, row in enumerate(self.geo_data):
-            for c, val in enumerate(row[:len(self.headers)]):
-                self.table.setItem(r, c, QTableWidgetItem(val.strip()))
+            for c, ci in enumerate(vis):
+                val = row[ci].strip() if ci < len(row) else ''
+                self.table.setItem(r, c, QTableWidgetItem(val))
 
         dups = _find_duplicates(self.geo_data)
         for r in dups:
-            for c in range(len(self.headers)):
+            for c in range(len(col_names)):
                 item = self.table.item(r, c)
                 if item:
                     item.setBackground(_DUP_COLOR)
@@ -91,8 +96,14 @@ class GeoPanel(QWidget):
 
     def _open_map(self):
         from dialogs import MapDialog
-        dlg = MapDialog(self.geo_data, self.columns, self.headers, self)
+        dlg = MapDialog(self.geo_data, self.columns, self.headers,
+                        self._display_cols, self)
         dlg.exec_()
+        excluded = dlg.get_excluded()
+        if excluded:
+            self.geo_data = [row for i, row in enumerate(self.geo_data)
+                             if (i + 1) not in excluded]
+            self._show_data()
 
     # ------------------------------------------------------------------
     # Public API

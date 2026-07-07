@@ -3,7 +3,7 @@ import os
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QMessageBox, QProgressDialog, QActionGroup, QAction,
-    QApplication,
+    QApplication, QDialog, QTextBrowser,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor
@@ -11,7 +11,7 @@ from PyQt5.QtGui import QPalette, QColor
 from photo_panel import PhotoPanel
 from geo_panel   import GeoPanel
 
-VERSION = '0.1'
+VERSION = '0.2'
 AUTHOR  = 'andrewkena'
 
 
@@ -94,11 +94,20 @@ class MainWindow(QMainWindow):
     # Menu
 
     def _build_menu(self):
-        help_menu = self.menuBar().addMenu('Справка')
-        about_act = QAction('О программе', self)
-        about_act.triggered.connect(self._show_about)
-        help_menu.addAction(about_act)
+        # Файл
+        file_menu = self.menuBar().addMenu('Файл')
 
+        open_photos = QAction('Открыть папку с фотографиями…', self)
+        open_photos.setShortcut('Ctrl+O')
+        open_photos.triggered.connect(lambda: self.photo_panel._pick_folder())
+        file_menu.addAction(open_photos)
+
+        open_geo = QAction('Открыть файл геопривязки…', self)
+        open_geo.setShortcut('Ctrl+G')
+        open_geo.triggered.connect(lambda: self.geo_panel._pick_file())
+        file_menu.addAction(open_geo)
+
+        # Вид
         view = self.menuBar().addMenu('Вид')
         theme_menu = view.addMenu('Тема')
         self._theme_group = QActionGroup(self)
@@ -111,6 +120,17 @@ class MainWindow(QMainWindow):
             if key == 'system':
                 a.setChecked(True)
         self._theme_group.triggered.connect(lambda a: apply_theme(a.data()))
+
+        # Справка
+        help_menu = self.menuBar().addMenu('Справка')
+        guide_act = QAction('Инструкция', self)
+        guide_act.setShortcut('F1')
+        guide_act.triggered.connect(self._show_guide)
+        help_menu.addAction(guide_act)
+        help_menu.addSeparator()
+        about_act = QAction('О программе', self)
+        about_act.triggered.connect(self._show_about)
+        help_menu.addAction(about_act)
 
     # ------------------------------------------------------------------
     # UI
@@ -139,6 +159,87 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.match_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
+
+    def _show_guide(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Инструкция — Geotager')
+        dlg.setMinimumSize(620, 540)
+        dlg.resize(660, 580)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(f'''
+<html><body style="font-family:sans-serif; font-size:13px; line-height:1.55;">
+<h2 style="margin-bottom:4px;">Geotager v{VERSION} — Руководство пользователя</h2>
+<hr style="border:none; border-top:1px solid #888; margin-bottom:10px;">
+
+<h3>Назначение программы</h3>
+<p>Geotager записывает GPS-координаты из текстового файла в EXIF-метаданные
+фотографий. Координаты сопоставляются последовательно: первая строка геоданных
+→ первому фото, вторая → второму и т.&nbsp;д. Оригинальные файлы не изменяются —
+результат сохраняется в подпапку <b>geotag/</b>.</p>
+
+<h3>Шаг 1. Фотографии</h3>
+<p>Выберите папку через <b>Файл → Открыть папку с фотографиями</b> или кнопку
+<b>Выбрать папку</b> (<i>Ctrl+O</i>). Поддерживаются форматы JPEG, PNG, TIFF,
+BMP, WebP.</p>
+<ul>
+  <li>Слайдер <b>Размер</b> изменяет масштаб миниатюр.</li>
+  <li>Список <b>Сортировка</b> — порядок обработки фото.</li>
+  <li><b>Правая кнопка мыши</b> по фото → <i>Исключить фото</i> (серое, перечёркнутое).
+      Повторно — вернуть обратно.</li>
+  <li><b>Двойной клик</b> — полноэкранный просмотр с EXIF-данными.</li>
+</ul>
+
+<h3>Шаг 2. Файл геоданных</h3>
+<p>Выберите файл через <b>Файл → Открыть файл геопривязки</b> или кнопку
+<b>Выбрать файл</b> (<i>Ctrl+G</i>). В диалоге настройте:</p>
+<ul>
+  <li><b>Разделитель</b> — запятая, точка с запятой, табуляция или пробел.</li>
+  <li><b>Пропустить строк</b> — количество строк заголовка в начале файла.</li>
+  <li><b>Удалить пустые столбцы</b> — убирает столбцы без данных.</li>
+  <li><b>Столбцы данных</b> — укажите, какой столбец содержит широту,
+      долготу и высоту (высота необязательна).</li>
+  <li><b>Показывать в таблице</b> — отметьте столбцы для отображения
+      при сопоставлении.</li>
+</ul>
+<p>Строки с дублирующимися координатами подсвечиваются жёлтым цветом.</p>
+
+<h3>Шаг 3. Карта</h3>
+<p>Кнопка <b>Показать на карте</b> открывает интерактивную карту
+(подложка — Google Спутник, можно переключить в правом верхнем углу).</p>
+<ul>
+  <li>Список точек расположен справа от карты.</li>
+  <li><b>Наведение</b> на строку списка — маркер подсвечивается на карте.</li>
+  <li><b>Правая кнопка мыши</b> по строке → <i>Исключить точку</i>: маркер
+      становится серым. Повторно — вернуть.</li>
+</ul>
+
+<h3>Шаг 4. Запись геотегов</h3>
+<p>Нажмите <b>Сопоставить и записать геотеги →</b>. Откроется таблица с
+попарным соответствием фото и геоточек. Проверьте и подтвердите — файлы
+сохранятся в папку <b>geotag/</b> внутри папки с фотографиями.</p>
+<p>Если файлы уже существуют, программа запросит подтверждение на перезапись.</p>
+
+<h3>Горячие клавиши</h3>
+<table cellspacing="0" cellpadding="3">
+  <tr><td><b>Ctrl+O</b></td><td>&nbsp;Открыть папку с фотографиями</td></tr>
+  <tr><td><b>Ctrl+G</b></td><td>&nbsp;Открыть файл геопривязки</td></tr>
+  <tr><td><b>F1</b></td><td>&nbsp;Инструкция</td></tr>
+</table>
+</body></html>''')
+
+        lay.addWidget(browser, 1)
+
+        close_btn = QPushButton('Закрыть')
+        close_btn.setFixedHeight(28)
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn)
+
+        dlg.exec_()
 
     def _show_about(self):
         QMessageBox.information(
